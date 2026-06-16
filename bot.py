@@ -3,6 +3,8 @@ from discord.ext import commands, tasks
 import json
 import datetime
 import random
+from flask import Flask
+from threading import Thread
 import os
 
 TOKEN = os.getenv("TOKEN")
@@ -20,11 +22,17 @@ frases = [
 ]
 
 gifs = [
-    "https://media.tenor.com/9vRAknt5D0AAAAAM/sad-anime.gif",
-    "https://media.tenor.com/yheo1GGu3FwAAAAM/sad-cry.gif",
-    "https://media.tenor.com/1Jz57wkoZV0AAAAM/crying-sad.gif",
-    "https://media.tenor.com/WqZ5j6B5dSAAAAAM/waiting-alone.gif",
-    "https://media.tenor.com/o7NqqB8K3sAAAAAM/looking-window-sad.gif"
+    "https://giphy.com/gifs/sadness-inside-out-q2qxiBO5prG9i",
+    "https://giphy.com/gifs/depression-13t22jOjxpkAN2",
+    "https://giphy.com/gifs/sadness-mBaNKEmk9SUKs",
+    "https://giphy.com/gifs/brownsugarapp-90s-devastating-dramatic-crying-d7rvF20PqNuGKSQGhf",
+    "https://giphy.com/gifs/sad-doggy-viral-lunch-tre-face-instagram-bqZadRhjePrJeqONfL",
+    "https://giphy.com/gifs/justin-crying-cry-vince-mcmahon-3QWfMsI8IaarXxtBt6",
+    "https://giphy.com/gifs/crying-alone-neymar-sad-AzRo1Y4WlDSY7NohuJ",
+    "https://giphy.com/gifs/red-listening-angry-bird-5c2aGDKZgCx7gV3QpZ",
+    "https://giphy.com/gifs/unscreen-dogs-puppy-doggo-7uowYcS5MHuZT4f9Rr",
+    "https://giphy.com/gifs/arrested-development-michael-cera-george-bluth-3oEjI80DSa1grNPTDq",
+    "https://giphy.com/gifs/dog-sad-triste-OzlmyoTC2n3aOTXGFi"
 ]
 
 
@@ -33,6 +41,27 @@ intents.message_content = True
 intents.members = True
 intents.presences = True
 intents.voice_states = True
+
+# ===== WEB SERVER PARA O RENDER =====
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "🌈 Memorial do Michael está online!"
+
+
+def rodar_web():
+    porta = int(os.environ.get("PORT", 10000))
+
+    app.run(
+        host="0.0.0.0",
+        port=porta
+    )
+
+
+Thread(target=rodar_web, daemon=True).start()
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
