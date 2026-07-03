@@ -32,7 +32,6 @@ XP_POR_MINUTO_CALL = 3
 
 # Configurações de VOZ
 DIAS_PARA_ENTRAR_CALL = 10  # Dias de ausência para ativar
-CANAL_VOZ_ID = None  # None = usa o primeiro disponível
 
 def agora():
     return datetime.now(FUSO_BRASIL)
@@ -210,6 +209,72 @@ bot = commands.Bot(
 # SISTEMA DE MEMORIAL
 # =========================================
 
+def pegar_emojis_do_canal(canal_id):
+    """Pega TODOS os emojis do título do canal do memorial"""
+    try:
+        canal = bot.get_channel(int(canal_id))
+        if not canal:
+            return []
+        
+        # Pega o nome do canal
+        nome_canal = canal.name
+        
+        # Procura por emojis no nome
+        import re
+        
+        # Padrão para emojis Unicode (inclui 🫃 e outros)
+        emoji_pattern = re.compile(
+            "[\U0001F600-\U0001F64F"  # emoticons
+            "\U0001F300-\U0001F5FF"  # symbols & pictographs
+            "\U0001F680-\U0001F6FF"  # transport & map symbols
+            "\U0001F700-\U0001F77F"  # alchemical symbols
+            "\U0001F780-\U0001F7FF"  # Geometric Shapes Extended
+            "\U0001F800-\U0001F8FF"  # Supplemental Arrows-C
+            "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+            "\U0001FA00-\U0001FA6F"  # Chess Symbols
+            "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
+            "\U00002702-\U000027B0"  # Dingbats
+            "\U000024C2-\U0001F251"
+            "\U0001F7E0-\U0001F7EB"  # More symbols
+            "\U0001F90C-\U0001F93A"  # More emojis
+            "\U0001F9B4-\U0001F9BF"  # Body parts
+            "\U0001FAC0-\U0001FAC5"  # More emojis
+            "]+",
+            flags=re.UNICODE
+        )
+        
+        # Encontra todos os emojis no nome
+        emojis_encontrados = emoji_pattern.findall(nome_canal)
+        
+        # Se não encontrou emojis Unicode, tenta encontrar :emoji: pattern
+        if not emojis_encontrados:
+            emoji_named = re.findall(r':([a-zA-Z0-9_]+):', nome_canal)
+            if emoji_named:
+                # Tenta converter para emojis usando o Discord
+                for nome_emoji in emoji_named:
+                    try:
+                        # Tenta pegar o emoji do Discord
+                        emoji_obj = discord.utils.get(bot.emojis, name=nome_emoji)
+                        if emoji_obj:
+                            emojis_encontrados.append(str(emoji_obj))
+                        else:
+                            # Se não encontrar, mantém o texto :nome:
+                            emojis_encontrados.append(f":{nome_emoji}:")
+                    except:
+                        emojis_encontrados.append(f":{nome_emoji}:")
+        
+        # Remove duplicatas mantendo a ordem
+        emojis_unicos = []
+        for emoji in emojis_encontrados:
+            if emoji not in emojis_unicos:
+                emojis_unicos.append(emoji)
+        
+        return emojis_unicos
+        
+    except Exception as e:
+        print(f"⚠️ Erro ao pegar emojis do canal: {e}")
+        return []
+
 def get_memorial(user_id):
     """Retorna o memorial de um usuário ou None se não existir"""
     result = db.cursor.execute(
@@ -281,6 +346,7 @@ frases = [
     "🌈 O memorial de {nome} continua aceso."
 ]
 
+# SEUS GIFS ORIGINAIS
 gifs = [
     "https://media.giphy.com/media/q2qxiBO5prG9i/giphy.gif",
     "https://media.giphy.com/media/13t22jOjxpkAN2/giphy.gif",
@@ -305,12 +371,21 @@ FRASES_TTS_MEMORIAL = [
 ]
 
 def criar_embed_memorial(memorial):
-    """Cria o embed do memorial com recorde personalizado"""
+    """Cria o embed do memorial com emojis personalizados do canal"""
     dias = memorial["dias"]
     recorde = memorial.get("recorde", "456")
     
+    # Pega os emojis do canal do memorial
+    emojis_titulo = pegar_emojis_do_canal(memorial.get("canal_id"))
+    
+    # Se tiver emojis, usa o PRIMEIRO para os dois lados (padrão 🫃-dias-sem-leo-🫃)
+    if emojis_titulo:
+        emoji = emojis_titulo[0]  # Pega o primeiro emoji
+    else:
+        emoji = "🌈"  # Fallback padrão
+    
     embed = discord.Embed(
-        title="🌈 ═══ MEMORIAL DA SAUDADE ═══ 🌈",
+        title=f"{emoji} ═══ MEMORIAL DA SAUDADE ═══ {emoji}",
         color=discord.Color.blue()
     )
     embed.description = (
@@ -324,35 +399,36 @@ def criar_embed_memorial(memorial):
         if dias < recorde_num:
             faltam = recorde_num - dias
             embed.add_field(
-                name="🏆 Recorde Histórico",
+                name=f"{emoji} Recorde Histórico",
                 value=f"{recorde_num} dias\n⏳ Faltam {faltam} dias para alcançar.",
                 inline=False
             )
         elif dias == recorde_num:
             embed.color = discord.Color.gold()
             embed.add_field(
-                name="👑 RECORDE ALCANÇADO",
+                name=f"👑 RECORDE ALCANÇADO",
                 value=f"Hoje igualamos o maior tempo de ausência: {recorde_num} dias!",
                 inline=False
             )
         else:
             embed.color = discord.Color.dark_purple()
             embed.add_field(
-                name="🌌 NOVA ERA",
+                name=f"🌌 NOVA ERA",
                 value=f"Um novo recorde está sendo escrito! {dias} dias e contando...",
                 inline=False
             )
     except ValueError:
         # Se não for número, mostra como texto personalizado
         embed.add_field(
-            name="🏆 Recorde Personalizado",
+            name=f"{emoji} Recorde Personalizado",
             value=recorde,
             inline=False
         )
     
+    # Sorteia um GIF aleatório da sua lista
     embed.set_image(url=random.choice(gifs))
     embed.set_footer(
-        text="Atualizado em " + agora().strftime("%d/%m/%Y às %H:%M")
+        text=f"{emoji} Atualizado em " + agora().strftime("%d/%m/%Y às %H:%M")
     )
     return embed
 
@@ -523,9 +599,13 @@ async def verificar_passagem_dos_dias():
                 if not canal:
                     continue
                 
+                # Pega o emoji do canal
+                emojis_titulo = pegar_emojis_do_canal(canal_id)
+                emoji = emojis_titulo[0] if emojis_titulo else "🌈"
+                
                 if apareceu_hoje:
                     embed = discord.Embed(
-                        title="🌈 UM RETORNO INESPERADO 🌈",
+                        title=f"{emoji} UM RETORNO INESPERADO {emoji}",
                         color=discord.Color.green()
                     )
                     embed.description = f"😭 Depois de **{dias} dias**, **{nome}** apareceu novamente.\n\n🕯️ A contagem foi reiniciada!"
@@ -544,7 +624,7 @@ async def verificar_passagem_dos_dias():
                     await canal.send(embed=embed)
                     await asyncio.sleep(1.5)
                     
-                    # 🆕 VERIFICA SE DEVE ENTRAR NA CALL (só para usuarios do memorial)
+                    # VERIFICA SE DEVE ENTRAR NA CALL
                     if dias == DIAS_PARA_ENTRAR_CALL:
                         guild = canal.guild
                         await entrar_call_tts_memorial(memorial_dict, guild)
@@ -907,4 +987,290 @@ async def cmd_limpar(ctx, quantidade: int):
 @commands.has_permissions(administrator=True)
 async def cmd_silenciar(ctx, usuario: discord.Member, tempo_minutos: int, *, motivo: str = "Sem motivo"):
     """!silenciar @usuario 5 motivo - Silencia um usuário"""
-    timeout = timedelta(minutes=tempo_minutos
+    timeout = timedelta(minutes=tempo_minutos)
+    await usuario.timeout(timeout, reason=motivo)
+    
+    embed = discord.Embed(
+        title="🔇 Usuário Silenciado",
+        description=f"{usuario.mention} foi silenciado por {tempo_minutos} minutos.",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="Motivo", value=motivo, inline=False)
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='desilenciar')
+@commands.has_permissions(administrator=True)
+async def cmd_desilenciar(ctx, usuario: discord.Member):
+    """!desilenciar @usuario - Remove o silêncio"""
+    await usuario.timeout(None)
+    await ctx.send(f"✅ {usuario.mention} foi desilenciado!")
+
+# ---------- UTILIDADES ----------
+
+@bot.command(name='ranking')
+async def cmd_ranking(ctx):
+    """!ranking - Mostra o ranking de XP"""
+    resultados = db.cursor.execute(
+        "SELECT user_id, xp FROM xp ORDER BY xp DESC LIMIT 10"
+    ).fetchall()
+    
+    if not resultados:
+        await ctx.send("📊 Ninguém tem XP ainda!")
+        return
+    
+    embed = discord.Embed(
+        title="🏆 Ranking de XP",
+        color=discord.Color.gold()
+    )
+    
+    descricao = ""
+    for i, (user_id, xp) in enumerate(resultados, 1):
+        try:
+            user = await bot.fetch_user(int(user_id))
+            nome = user.display_name
+        except:
+            nome = user_id[:8]
+        
+        medalhas = ["🥇", "🥈", "🥉"]
+        emoji = medalhas[i-1] if i <= 3 else f"{i}°"
+        descricao += f"{emoji} **{nome}** - {xp} XP\n"
+    
+    embed.description = descricao
+    await ctx.send(embed=embed)
+
+@bot.command(name='enquete')
+async def cmd_enquete(ctx, pergunta: str, opcao1: str, opcao2: str, opcao3: str = None, opcao4: str = None):
+    """!enquete "Pergunta" "Opção1" "Opção2" - Cria uma enquete"""
+    opcoes = [opcao1, opcao2]
+    if opcao3:
+        opcoes.append(opcao3)
+    if opcao4:
+        opcoes.append(opcao4)
+    
+    emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+    descricao = "\n".join([f"{emojis[i]} {op}" for i, op in enumerate(opcoes)])
+    
+    embed = discord.Embed(
+        title=f"📊 Enquete: {pergunta}",
+        description=descricao,
+        color=discord.Color.blue()
+    )
+    embed.set_footer(text=f"Criado por {ctx.author.display_name}")
+    
+    msg = await ctx.send(embed=embed)
+    
+    for i in range(len(opcoes)):
+        await msg.add_reaction(emojis[i])
+
+@bot.command(name='sorteio')
+async def cmd_sorteio(ctx, premio: str, duracao_minutos: int):
+    """!sorteio "Prêmio" 5 - Realiza um sorteio"""
+    msg = await ctx.send(
+        f"🎉 **SORTEIO INICIADO!** 🎉\nPrêmio: **{premio}**\nReaja com 🎉 para participar!\nTempo: {duracao_minutos} minutos"
+    )
+    await msg.add_reaction("🎉")
+    
+    await asyncio.sleep(duracao_minutos * 60)
+    
+    msg_atualizada = await ctx.channel.fetch_message(msg.id)
+    participantes = []
+    
+    for reaction in msg_atualizada.reactions:
+        if str(reaction.emoji) == "🎉":
+            async for user in reaction.users():
+                if not user.bot:
+                    participantes.append(user)
+    
+    if participantes:
+        vencedor = random.choice(participantes)
+        await ctx.send(f"🎊 **{vencedor.mention}** ganhou o sorteio de **{premio}**! Parabéns! 🎊")
+    else:
+        await ctx.send("❌ Ninguém participou do sorteio!")
+
+@bot.command(name='userinfo')
+async def cmd_userinfo(ctx, usuario: discord.Member = None):
+    """!userinfo @usuario - Mostra informações do usuário"""
+    if not usuario:
+        usuario = ctx.author
+    
+    embed = discord.Embed(
+        title=f"ℹ️ Informações de {usuario.display_name}",
+        color=usuario.color
+    )
+    embed.set_thumbnail(url=usuario.display_avatar.url)
+    embed.add_field(name="ID", value=usuario.id, inline=False)
+    embed.add_field(name="Entrou em", value=usuario.joined_at.strftime("%d/%m/%Y"), inline=True)
+    embed.add_field(name="Criado em", value=usuario.created_at.strftime("%d/%m/%Y"), inline=True)
+    
+    cargos = [role.mention for role in usuario.roles[1:5]]
+    embed.add_field(name="Cargos", value=", ".join(cargos) or "Nenhum", inline=False)
+    
+    await ctx.send(embed=embed)
+
+@bot.command(name='testemojis')
+async def cmd_testemojis(ctx):
+    """!testemojis - Testa os emojis do canal atual"""
+    emojis = pegar_emojis_do_canal(ctx.channel.id)
+    
+    if emojis:
+        emoji = emojis[0]  # Pega o primeiro emoji
+        
+        embed = discord.Embed(
+            title=f"{emoji} TESTE DE EMOJIS {emoji}",
+            color=discord.Color.blue()
+        )
+        embed.description = f"Emojis encontrados no nome do canal: **{', '.join(emojis)}**"
+        embed.add_field(
+            name="Emoji usado",
+            value=emoji,
+            inline=True
+        )
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("❌ Nenhum emoji encontrado no nome deste canal!")
+
+# ---------- AJUDA ----------
+
+@bot.command(name='ajuda')
+async def cmd_ajuda(ctx):
+    """!ajuda - Mostra todos os comandos"""
+    embed = discord.Embed(
+        title="📚 Comandos do Bot",
+        color=discord.Color.blue(),
+        description="Todos os comandos usam `!` no início"
+    )
+    
+    embed.add_field(
+        name="🔧 Memorial",
+        value=(
+            "`!memorial @usuario 500` - Configura memorial com recorde\n"
+            "`!remover @usuario` - Remove memorial\n"
+            "`!dias @usuario` - Status do memorial\n"
+            "`!lista` - Lista memoriais\n"
+            "`!resetar @usuario` - Reseta contagem\n"
+            "`!recorde @usuario` - Mostra recorde\n"
+            "`!setrecorde @usuario 500` - Altera recorde"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🎤 Voz",
+        value=(
+            "`!setcall #canal` - Configura canal de voz\n"
+            "`!anunciacao` - Anuncia todos ausentes na call\n"
+            "`!testcall \"Texto\"` - Testa o TTS"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🎫 Tickets",
+        value=(
+            "`!ticket` - Abre ticket\n"
+            "`!fechar` - Fecha ticket"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="⚙️ Moderação (Admin)",
+        value=(
+            "`!warn @usuario motivo` - Adverte\n"
+            "`!silenciar @usuario 5 motivo` - Silencia\n"
+            "`!desilenciar @usuario` - Desilencia\n"
+            "`!limpar 10` - Limpa mensagens"
+        ),
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📊 Utilidades",
+        value=(
+            "`!ranking` - Ranking de XP\n"
+            "`!enquete \"Pergunta\" \"Op1\" \"Op2\"` - Enquete\n"
+            "`!sorteio \"Prêmio\" 5` - Sorteio\n"
+            "`!userinfo @usuario` - Info do usuário\n"
+            "`!testemojis` - Testa emojis do canal"
+        ),
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
+
+# =========================================
+# EVENTOS
+# =========================================
+
+@bot.event
+async def on_ready():
+    print(f"✅ Bot conectado como {bot.user}")
+    await bot.wait_until_ready()
+    
+    await asyncio.sleep(5)
+    await verificar_passagem_dos_dias()
+    
+    if not verificar_sistema.is_running():
+        verificar_sistema.start()
+    
+    print("🚀 Bot está pronto para usar! Use !ajuda para ver os comandos.")
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    
+    if get_memorial(message.author.id):
+        marcou_presenca(message.author.id)
+    
+    # Adiciona XP
+    adicionar_xp(message.author.id, XP_POR_MENSAGEM)
+    
+    await bot.process_commands(message)
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    if get_memorial(member.id):
+        marcou_presenca(member.id)
+
+# =========================================
+# TRATAMENTO DE ERROS
+# =========================================
+
+@cmd_memorial.error
+async def cmd_memorial_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("⛔ Apenas administradores podem configurar memoriais!")
+    elif isinstance(error, commands.MemberNotFound):
+        await ctx.send("❌ Usuário não encontrado! Certifique-se de marcar alguém.")
+    else:
+        await ctx.send(f"❌ Erro: {error}")
+
+@cmd_remover.error
+async def cmd_remover_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("⛔ Apenas administradores podem remover memoriais!")
+    elif isinstance(error, commands.MemberNotFound):
+        await ctx.send("❌ Usuário não encontrado!")
+
+@cmd_warn.error
+async def cmd_warn_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("⛔ Apenas administradores podem usar este comando!")
+
+@cmd_silenciar.error
+async def cmd_silenciar_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("⛔ Apenas administradores podem silenciar usuários!")
+
+# =========================================
+# INICIAR BOT
+# =========================================
+
+if __name__ == "__main__":
+    print("🚀 Iniciando Bot Supremo...")
+    try:
+        bot.run(TOKEN, reconnect=True)
+    except Exception as e:
+        print(f"❌ Erro: {e}")
