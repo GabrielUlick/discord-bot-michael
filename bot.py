@@ -4,11 +4,12 @@ from discord.ext import commands, tasks
 import json
 import os
 import random
+import asyncio
 
 from flask import Flask
 from threading import Thread
 
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 
 
@@ -27,6 +28,10 @@ if not TOKEN:
 RECORDE = 456
 
 FUSO_BRASIL = ZoneInfo("America/Sao_Paulo")
+
+# Delay entre mensagens para evitar rate limit
+DELAY_ENTRE_MENSAGENS = 2  # segundos
+MAX_MENSSAGENS_POR_LOTE = 5  # máximo de mensagens por vez
 
 
 def agora():
@@ -96,37 +101,24 @@ def home():
 
 
 def iniciar_web():
-
-    porta = int(
-        os.getenv("PORT", 10000)
-    )
-
-    app.run(
-        host="0.0.0.0",
-        port=porta,
-        threaded=True,
-        use_reloader=False
-    )
+    porta = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=porta, threaded=True, use_reloader=False)
 
 
-Thread(
-    target=iniciar_web,
-    daemon=True
-).start()
+# Inicia em uma thread separada
+Thread(target=iniciar_web, daemon=True).start()
 
 
 # =========================================
 # BANCO DE DADOS JSON
 # =========================================
 
-
 DADOS_PADRAO = {
-    "memoriais": {}  # { "user_id": { "nome": "", "canal_id": 0, "dias": 0, "apareceu_hoje": False, "ultima_data": "" } }
+    "memoriais": {}
 }
 
 
 def carregar():
-
     if not os.path.exists("dados.json"):
         salvar(DADOS_PADRAO)
         return DADOS_PADRAO.copy()
@@ -135,7 +127,6 @@ def carregar():
         with open("dados.json", "r", encoding="utf-8") as arquivo:
             dados = json.load(arquivo)
 
-        # Garante que a estrutura existe
         if "memoriais" not in dados:
             dados["memoriais"] = {}
 
@@ -196,9 +187,7 @@ def criar_memorial(user_id, nome, canal_id):
 
 
 def marcou_presenca(user_id):
-    """
-    Marca que o usuário apareceu hoje.
-    """
+    """Marca que o usuário apareceu hoje."""
     memorial = get_memorial(user_id)
     if memorial and not memorial["apareceu_hoje"]:
         memorial["apareceu_hoje"] = True
@@ -207,16 +196,13 @@ def marcou_presenca(user_id):
 
 @bot.event
 async def on_message(msg):
-    # Verifica se o autor tem memorial
     if str(msg.author.id) in dados["memoriais"]:
         marcou_presenca(msg.author.id)
-
     await bot.process_commands(msg)
 
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # Verifica se o membro tem memorial
     if str(member.id) in dados["memoriais"]:
         marcou_presenca(member.id)
 
@@ -225,7 +211,7 @@ async def on_voice_state_update(member, before, after):
 # EMBEDS DO MEMORIAL
 # =========================================
 
-def criar_embed_memorial(memorial, user_id):
+def criar_embed_memorial(memorial):
     dias = memorial["dias"]
 
     embed = discord.Embed(
@@ -242,10 +228,7 @@ def criar_embed_memorial(memorial, user_id):
         faltam = RECORDE - dias
         embed.add_field(
             name="🏆 Recorde Histórico",
-            value=(
-                f"{RECORDE} dias\n"
-                f"⏳ Faltam {faltam} dias para alcançar."
-            ),
+            value=f"{RECORDE} dias\n⏳ Faltam {faltam} dias para alcançar.",
             inline=False
         )
     elif dias == RECORDE:
@@ -263,15 +246,9 @@ def criar_embed_memorial(memorial, user_id):
             inline=False
         )
 
-    embed.set_image(
-        url=random.choice(gifs)
-    )
-
+    embed.set_image(url=random.choice(gifs))
     embed.set_footer(
-        text=(
-            "Atualizado em "
-            + agora().strftime("%d/%m/%Y às %H:%M")
-        )
+        text="Atualizado em " + agora().strftime("%d/%m/%Y às %H:%M")
     )
 
     return embed
@@ -290,85 +267,132 @@ def criar_embed_retorno(memorial):
         "mas as lembranças continuam vivas."
     )
 
-    embed.set_footer(
-        text="A contagem foi reiniciada."
-    )
-
+    embed.set_footer(text="A contagem foi reiniciada.")
     return embed
 
 
-async def enviar_memorial(memorial, canal):
-    await canal.send(
-        embed=criar_embed_memorial(memorial, None)
-    )
-
-
-async def enviar_retorno(memorial, canal):
-    await canal.send(
-        embed=criar_embed_retorno(memorial)
-    )
-
-
 # =========================================
-# SISTEMA DE CONTAGEM INTELIGENTE
+# SISTEMA DE CONTAGEM INTELIGENTE COM CONTROLE DE RATE LIMIT
 # =========================================
+
+async def enviar_com_rate_limit(canal, embed, tentativas=3):
+    """Envia mensagem com controle de rate limit"""
+    for tentativa in range(tentativas):
+        try:
+            await canal.send(embed=embed)
+            await asyncio.sleep(1)  # Delay entre mensagens
+            return True
+        except discord.errors.HTTPException as e:
+            if e.status == 429:  # Rate limit
+                retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
+                print(f"⚠️ Rate limit! Esperando {retry_after}s...")
+                await asyncio.sleep(retry_after + 1)
+                if tentativa == tentativas - 1:
+                    print(f"❌ Falha ao enviar mensagem após {tentativas} tentativas")
+                    return False
+            else:
+                print(f"❌ Erro ao enviar mensagem: {e}")
+                return False
+    return False
+
 
 async def verificar_passagem_dos_dias():
-    """
-    Verifica quantos dias se passaram desde
-    a última atualização registrada para cada memorial.
-    """
-
+    """Verifica dias passados para cada memorial com controle de rate limit"""
     hoje_atual = hoje()
-    memoriais_para_remover = []
-
+    mensagens_pendentes = []
+    
+    # Primeiro, processa todos os memoriais e prepara as mensagens
     for user_id_str, memorial in dados["memoriais"].items():
-        ultima = date.fromisoformat(memorial["ultima_data"])
-        dias_passados = (hoje_atual - ultima).days
+        try:
+            ultima = date.fromisoformat(memorial["ultima_data"])
+            dias_passados = (hoje_atual - ultima).days
 
-        # Nada mudou para este memorial
-        if dias_passados <= 0:
-            continue
+            if dias_passados <= 0:
+                continue
 
-        canal = bot.get_channel(memorial["canal_id"])
-        if canal is None:
-            print(f"⚠️ Canal do memorial de {memorial['nome']} não encontrado.")
+            canal = bot.get_channel(memorial["canal_id"])
+            if canal is None:
+                print(f"⚠️ Canal de {memorial['nome']} não encontrado.")
+                memorial["ultima_data"] = hoje_atual.isoformat()
+                salvar()
+                continue
+
+            # Prepara as mensagens para este memorial
+            for _ in range(dias_passados):
+                if memorial["apareceu_hoje"]:
+                    mensagens_pendentes.append({
+                        "tipo": "retorno",
+                        "canal": canal,
+                        "memorial": memorial.copy()
+                    })
+                    memorial["dias"] = 0
+                else:
+                    memorial["dias"] += 1
+                    mensagens_pendentes.append({
+                        "tipo": "memorial",
+                        "canal": canal,
+                        "memorial": memorial.copy()
+                    })
+
+                memorial["apareceu_hoje"] = False
+
             memorial["ultima_data"] = hoje_atual.isoformat()
-            salvar()
+            
+        except Exception as e:
+            print(f"❌ Erro ao processar memorial {user_id_str}: {e}")
             continue
 
-        # Para cada dia que passou, atualiza a contagem
-        for _ in range(dias_passados):
-            if memorial["apareceu_hoje"]:
-                await enviar_retorno(memorial, canal)
-                memorial["dias"] = 0
-            else:
-                memorial["dias"] += 1
-                await enviar_memorial(memorial, canal)
+    # Salva as alterações
+    salvar()
 
-            # Novo dia começa sem presença
-            memorial["apareceu_hoje"] = False
-
-        memorial["ultima_data"] = hoje_atual.isoformat()
-        salvar()
+    # Envia as mensagens com controle de rate limit
+    if mensagens_pendentes:
+        print(f"📨 Enviando {len(mensagens_pendentes)} mensagens...")
+        
+        # Processa em lotes para evitar rate limit
+        for i in range(0, len(mensagens_pendentes), MAX_MENSSAGENS_POR_LOTE):
+            lote = mensagens_pendentes[i:i + MAX_MENSSAGENS_POR_LOTE]
+            
+            # Envia as mensagens do lote com delay
+            for msg in lote:
+                if msg["tipo"] == "retorno":
+                    embed = criar_embed_retorno(msg["memorial"])
+                else:
+                    embed = criar_embed_memorial(msg["memorial"])
+                
+                await enviar_com_rate_limit(msg["canal"], embed)
+                await asyncio.sleep(DELAY_ENTRE_MENSAGENS)
+            
+            # Delay entre lotes
+            if i + MAX_MENSSAGENS_POR_LOTE < len(mensagens_pendentes):
+                await asyncio.sleep(5)  # Pausa maior entre lotes
 
 
 # =========================================
 # LOOP AUTOMÁTICO
 # =========================================
 
-@tasks.loop(minutes=5)
+@tasks.loop(minutes=10)  # Aumentado para 10 minutos para evitar rate limit
 async def verificar_sistema():
-    await verificar_passagem_dos_dias()
+    try:
+        await verificar_passagem_dos_dias()
+    except Exception as e:
+        print(f"❌ Erro no loop de verificação: {e}")
 
 
 @bot.event
 async def on_ready():
     print(f"🌈 Memorial iniciado como {bot.user}")
     
-    # Confere imediatamente ao iniciar
-    await verificar_passagem_dos_dias()
-
+    # Espera o bot estar totalmente pronto
+    await bot.wait_until_ready()
+    
+    # Verifica imediatamente ao iniciar
+    try:
+        await verificar_passagem_dos_dias()
+    except Exception as e:
+        print(f"❌ Erro na verificação inicial: {e}")
+    
     if not verificar_sistema.is_running():
         verificar_sistema.start()
 
@@ -380,60 +404,43 @@ async def on_ready():
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def configurar(ctx):
-    """
-    Define qual usuário será monitorado.
-    Apenas administradores podem usar.
-    """
-
+    """Define qual usuário será monitorado"""
     if not ctx.message.mentions:
         await ctx.send(
             "❌ Você precisa marcar um usuário.\n\n"
-            "Exemplo:\n"
-            "`!configurar @usuario`"
+            "Exemplo: `!configurar @usuario`"
         )
         return
 
     membro = ctx.message.mentions[0]
     user_id_str = str(membro.id)
 
-    # Verifica se já existe memorial para este usuário
     if user_id_str in dados["memoriais"]:
         await ctx.send(
             f"⚠️ Já existe um memorial para {membro.mention}.\n"
-            "Use `!remover @usuario` para remover ou atualize manualmente."
+            "Use `!remover @usuario` para remover."
         )
         return
 
-    # Cria novo memorial
-    criar_memorial(
-        user_id=membro.id,
-        nome=membro.display_name,
-        canal_id=ctx.channel.id
-    )
-
-    await ctx.send(
-        f"🌈 Memorial de {membro.mention} "
-        "foi configurado com sucesso."
-    )
-
-    # Envia o estado atual
+    criar_memorial(membro.id, membro.display_name, ctx.channel.id)
+    
+    await ctx.send(f"🌈 Memorial de {membro.mention} configurado com sucesso.")
+    
+    # Envia o estado atual com delay
+    await asyncio.sleep(1)
     memorial = get_memorial(membro.id)
-    await enviar_memorial(memorial, ctx.channel)
+    embed = criar_embed_memorial(memorial)
+    await enviar_com_rate_limit(ctx.channel, embed)
 
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def remover(ctx):
-    """
-    Remove o memorial de um usuário.
-    Apenas administradores podem usar.
-    """
-
+    """Remove o memorial de um usuário"""
     if not ctx.message.mentions:
         await ctx.send(
             "❌ Você precisa marcar um usuário.\n\n"
-            "Exemplo:\n"
-            "`!remover @usuario`"
+            "Exemplo: `!remover @usuario`"
         )
         return
 
@@ -441,25 +448,17 @@ async def remover(ctx):
     user_id_str = str(membro.id)
 
     if user_id_str not in dados["memoriais"]:
-        await ctx.send(
-            f"❌ Não existe memorial para {membro.mention}."
-        )
+        await ctx.send(f"❌ Não existe memorial para {membro.mention}.")
         return
 
     del dados["memoriais"][user_id_str]
     salvar()
-
-    await ctx.send(
-        f"🗑️ Memorial de {membro.mention} foi removido com sucesso."
-    )
+    await ctx.send(f"🗑️ Memorial de {membro.mention} removido com sucesso.")
 
 
 @bot.command()
 async def listar(ctx):
-    """
-    Lista todos os memoriais ativos.
-    """
-
+    """Lista todos os memoriais ativos"""
     if not dados["memoriais"]:
         await ctx.send("📭 Nenhum memorial ativo no momento.")
         return
@@ -474,44 +473,31 @@ async def listar(ctx):
         descricao += f"• **{memorial['nome']}** - {memorial['dias']} dias\n"
 
     embed.description = descricao
-    embed.set_footer(
-        text=f"Total de {len(dados['memoriais'])} memoriais"
-    )
-
+    embed.set_footer(text=f"Total de {len(dados['memoriais'])} memoriais")
+    
     await ctx.send(embed=embed)
 
 
 @bot.command()
 async def dias(ctx, membro: discord.Member = None):
-    """
-    Mostra o status atual do memorial de um usuário.
-    Se nenhum usuário for mencionado, mostra o memorial do autor.
-    """
-
+    """Mostra o status atual do memorial"""
     if membro is None:
         membro = ctx.author
 
     user_id_str = str(membro.id)
 
     if user_id_str not in dados["memoriais"]:
-        await ctx.send(
-            f"❌ Não existe memorial para {membro.mention}."
-        )
+        await ctx.send(f"❌ Não existe memorial para {membro.mention}.")
         return
 
     memorial = get_memorial(membro.id)
-    await ctx.send(
-        embed=criar_embed_memorial(memorial, membro.id)
-    )
+    embed = criar_embed_memorial(memorial)
+    await ctx.send(embed=embed)
 
 
 @bot.command()
 async def teste(ctx):
-    """
-    Testa a aparência do memorial do autor.
-    Não altera nenhuma contagem.
-    """
-
+    """Testa a aparência do memorial"""
     if str(ctx.author.id) not in dados["memoriais"]:
         await ctx.send(
             "❌ Você não tem um memorial configurado.\n"
@@ -521,17 +507,13 @@ async def teste(ctx):
 
     memorial = get_memorial(ctx.author.id)
     await ctx.send("🧪 Visualização de teste:")
-    await ctx.send(
-        embed=criar_embed_memorial(memorial, ctx.author.id)
-    )
+    embed = criar_embed_memorial(memorial)
+    await ctx.send(embed=embed)
 
 
 @bot.command()
 async def info(ctx):
-    """
-    Mostra informações técnicas do sistema.
-    """
-
+    """Mostra informações técnicas do sistema"""
     embed = discord.Embed(
         title="📊 Informações do Sistema",
         color=discord.Color.blurple()
@@ -555,14 +537,13 @@ async def info(ctx):
         inline=False
     )
 
-    # Lista os memoriais ativos
     if dados["memoriais"]:
         lista = ""
         for user_id_str, memorial in dados["memoriais"].items():
             lista += f"• {memorial['nome']} - {memorial['dias']} dias\n"
         embed.add_field(
             name="📋 Memoriais Ativos",
-            value=lista,
+            value=lista[:1024],  # Limite do Discord
             inline=False
         )
 
@@ -576,10 +557,7 @@ async def info(ctx):
 @configurar.error
 async def erro_configurar(ctx, erro):
     if isinstance(erro, commands.MissingPermissions):
-        await ctx.send(
-            "⛔ Apenas administradores "
-            "podem configurar o memorial."
-        )
+        await ctx.send("⛔ Apenas administradores podem configurar o memorial.")
     else:
         raise erro
 
@@ -587,16 +565,13 @@ async def erro_configurar(ctx, erro):
 @remover.error
 async def erro_remover(ctx, erro):
     if isinstance(erro, commands.MissingPermissions):
-        await ctx.send(
-            "⛔ Apenas administradores "
-            "podem remover memoriais."
-        )
+        await ctx.send("⛔ Apenas administradores podem remover memoriais.")
     else:
         raise erro
 
 
 # =========================================
-# MENSAGEM DE INICIALIZAÇÃO
+# EVENTOS DE CONEXÃO
 # =========================================
 
 @bot.event
