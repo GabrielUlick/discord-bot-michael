@@ -90,7 +90,8 @@ def home():
     return {
         "status": "online",
         "bot": str(bot.user) if bot.user else "conectando",
-        "hora": agora().strftime("%d/%m/%Y %H:%M:%S")
+        "hora": agora().strftime("%d/%m/%Y %H:%M:%S"),
+        "memoriais": len(dados.get("memoriais", {}))
     }
 
 
@@ -120,79 +121,38 @@ Thread(
 
 
 DADOS_PADRAO = {
-    "usuario_id": 0,
-    "nome": "",
-    "canal_id": 0,
-
-    "dias": 18,
-
-    "apareceu_hoje": False,
-
-    # formato YYYY-MM-DD
-    "ultima_data": hoje().isoformat()
+    "memoriais": {}  # { "user_id": { "nome": "", "canal_id": 0, "dias": 0, "apareceu_hoje": False, "ultima_data": "" } }
 }
 
 
 def carregar():
 
-    if not os.path.exists(
-        "dados.json"
-    ):
+    if not os.path.exists("dados.json"):
         salvar(DADOS_PADRAO)
         return DADOS_PADRAO.copy()
 
     try:
-
-        with open(
-            "dados.json",
-            "r",
-            encoding="utf-8"
-        ) as arquivo:
-
+        with open("dados.json", "r", encoding="utf-8") as arquivo:
             dados = json.load(arquivo)
 
-
-        # adiciona chaves que faltarem
-        for chave, valor in DADOS_PADRAO.items():
-
-            if chave not in dados:
-                dados[chave] = valor
-
+        # Garante que a estrutura existe
+        if "memoriais" not in dados:
+            dados["memoriais"] = {}
 
         return dados
 
-
     except Exception as erro:
-
-        print(
-            "⚠️ JSON corrompido:",
-            erro
-        )
-
+        print("⚠️ JSON corrompido:", erro)
         salvar(DADOS_PADRAO)
-
         return DADOS_PADRAO.copy()
 
 
-
 def salvar(conteudo=None):
-
     if conteudo is None:
         conteudo = dados
 
-
-    with open(
-        "dados.json",
-        "w",
-        encoding="utf-8"
-    ) as arquivo:
-
-        json.dump(
-            conteudo,
-            arquivo,
-            indent=4,
-            ensure_ascii=False
-        )
+    with open("dados.json", "w", encoding="utf-8") as arquivo:
+        json.dump(conteudo, arquivo, indent=4, ensure_ascii=False)
 
 
 dados = carregar()
@@ -203,14 +163,9 @@ dados = carregar()
 # =========================================
 
 intents = discord.Intents.default()
-
 intents.message_content = True
-
-# Presença removida para economizar recursos
 intents.presences = False
-
 intents.voice_states = True
-
 
 bot = commands.Bot(
     command_prefix="!",
@@ -218,49 +173,60 @@ bot = commands.Bot(
     help_command=None
 )
 
+
 # =========================================
 # FUNÇÕES DE PRESENÇA
 # =========================================
 
-def marcou_presenca():
+def get_memorial(user_id):
+    """Retorna o memorial de um usuário ou None se não existir"""
+    return dados["memoriais"].get(str(user_id))
+
+
+def criar_memorial(user_id, nome, canal_id):
+    """Cria um novo memorial para um usuário"""
+    dados["memoriais"][str(user_id)] = {
+        "nome": nome,
+        "canal_id": canal_id,
+        "dias": 0,
+        "apareceu_hoje": False,
+        "ultima_data": hoje().isoformat()
+    }
+    salvar()
+
+
+def marcou_presenca(user_id):
     """
     Marca que o usuário apareceu hoje.
     """
-
-    if not dados["apareceu_hoje"]:
-        dados["apareceu_hoje"] = True
+    memorial = get_memorial(user_id)
+    if memorial and not memorial["apareceu_hoje"]:
+        memorial["apareceu_hoje"] = True
         salvar()
 
 
 @bot.event
 async def on_message(msg):
-
-    if (
-        dados["usuario_id"] != 0
-        and msg.author.id == dados["usuario_id"]
-    ):
-        marcou_presenca()
+    # Verifica se o autor tem memorial
+    if str(msg.author.id) in dados["memoriais"]:
+        marcou_presenca(msg.author.id)
 
     await bot.process_commands(msg)
 
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-
-    if (
-        dados["usuario_id"] != 0
-        and member.id == dados["usuario_id"]
-    ):
-        marcou_presenca()
+    # Verifica se o membro tem memorial
+    if str(member.id) in dados["memoriais"]:
+        marcou_presenca(member.id)
 
 
 # =========================================
 # EMBEDS DO MEMORIAL
 # =========================================
 
-def criar_embed_memorial():
-
-    dias = dados["dias"]
+def criar_embed_memorial(memorial, user_id):
+    dias = memorial["dias"]
 
     embed = discord.Embed(
         title="🌈 ═══ MEMORIAL DA SAUDADE ═══ 🌈",
@@ -268,14 +234,12 @@ def criar_embed_memorial():
     )
 
     embed.description = (
-        f"🕯️ **Hoje são {dias} dias sem {dados['nome']}**\n\n"
-        f"{random.choice(frases).format(nome=dados['nome'], dias=dias)}"
+        f"🕯️ **Hoje são {dias} dias sem {memorial['nome']}**\n\n"
+        f"{random.choice(frases).format(nome=memorial['nome'], dias=dias)}"
     )
 
     if dias < RECORDE:
-
         faltam = RECORDE - dias
-
         embed.add_field(
             name="🏆 Recorde Histórico",
             value=(
@@ -284,27 +248,20 @@ def criar_embed_memorial():
             ),
             inline=False
         )
-
     elif dias == RECORDE:
-
         embed.color = discord.Color.gold()
-
         embed.add_field(
             name="👑 RECORDE ALCANÇADO",
             value="Hoje igualamos o maior tempo de ausência!",
             inline=False
         )
-
     else:
-
         embed.color = discord.Color.dark_purple()
-
         embed.add_field(
             name="🌌 NOVA ERA",
             value="Um novo recorde está sendo escrito.",
             inline=False
         )
-
 
     embed.set_image(
         url=random.choice(gifs)
@@ -320,41 +277,35 @@ def criar_embed_memorial():
     return embed
 
 
-def criar_embed_retorno():
-
+def criar_embed_retorno(memorial):
     embed = discord.Embed(
         title="🌈 UM RETORNO INESPERADO 🌈",
         color=discord.Color.green()
     )
 
-
     embed.description = (
-        f"😭 Depois de **{dados['dias']} dias**, "
-        f"**{dados['nome']}** apareceu novamente.\n\n"
+        f"😭 Depois de **{memorial['dias']} dias**, "
+        f"**{memorial['nome']}** apareceu novamente.\n\n"
         "🕯️ O memorial volta ao dia 0,\n"
         "mas as lembranças continuam vivas."
     )
-
 
     embed.set_footer(
         text="A contagem foi reiniciada."
     )
 
-
     return embed
 
 
-async def enviar_memorial(canal):
-
+async def enviar_memorial(memorial, canal):
     await canal.send(
-        embed=criar_embed_memorial()
+        embed=criar_embed_memorial(memorial, None)
     )
 
 
-async def enviar_retorno(canal):
-
+async def enviar_retorno(memorial, canal):
     await canal.send(
-        embed=criar_embed_retorno()
+        embed=criar_embed_retorno(memorial)
     )
 
 
@@ -365,68 +316,41 @@ async def enviar_retorno(canal):
 async def verificar_passagem_dos_dias():
     """
     Verifica quantos dias se passaram desde
-    a última atualização registrada.
+    a última atualização registrada para cada memorial.
     """
 
     hoje_atual = hoje()
+    memoriais_para_remover = []
 
-    ultima = date.fromisoformat(
-        dados["ultima_data"]
-    )
+    for user_id_str, memorial in dados["memoriais"].items():
+        ultima = date.fromisoformat(memorial["ultima_data"])
+        dias_passados = (hoje_atual - ultima).days
 
+        # Nada mudou para este memorial
+        if dias_passados <= 0:
+            continue
 
-    dias_passados = (
-        hoje_atual - ultima
-    ).days
+        canal = bot.get_channel(memorial["canal_id"])
+        if canal is None:
+            print(f"⚠️ Canal do memorial de {memorial['nome']} não encontrado.")
+            memorial["ultima_data"] = hoje_atual.isoformat()
+            salvar()
+            continue
 
+        # Para cada dia que passou, atualiza a contagem
+        for _ in range(dias_passados):
+            if memorial["apareceu_hoje"]:
+                await enviar_retorno(memorial, canal)
+                memorial["dias"] = 0
+            else:
+                memorial["dias"] += 1
+                await enviar_memorial(memorial, canal)
 
-    # Nada mudou
-    if dias_passados <= 0:
-        return
+            # Novo dia começa sem presença
+            memorial["apareceu_hoje"] = False
 
-
-    canal = bot.get_channel(
-        dados["canal_id"]
-    )
-
-
-    if canal is None:
-
-        print(
-            "⚠️ Canal do memorial não encontrado."
-        )
-
-        dados["ultima_data"] = hoje_atual.isoformat()
-
+        memorial["ultima_data"] = hoje_atual.isoformat()
         salvar()
-
-        return
-
-
-    # Para cada dia que passou,
-    # atualiza a contagem corretamente
-    for _ in range(dias_passados):
-
-        if dados["apareceu_hoje"]:
-
-            await enviar_retorno(canal)
-
-            dados["dias"] = 0
-
-        else:
-
-            dados["dias"] += 1
-
-            await enviar_memorial(canal)
-
-
-        # Novo dia começa sem presença
-        dados["apareceu_hoje"] = False
-
-
-    dados["ultima_data"] = hoje_atual.isoformat()
-
-    salvar()
 
 
 # =========================================
@@ -435,29 +359,23 @@ async def verificar_passagem_dos_dias():
 
 @tasks.loop(minutes=5)
 async def verificar_sistema():
-
     await verificar_passagem_dos_dias()
 
 
 @bot.event
 async def on_ready():
-
-    print(
-        f"🌈 Memorial iniciado como {bot.user}"
-    )
-
+    print(f"🌈 Memorial iniciado como {bot.user}")
+    
     # Confere imediatamente ao iniciar
     await verificar_passagem_dos_dias()
 
-
     if not verificar_sistema.is_running():
-
         verificar_sistema.start()
+
 
 # =========================================
 # COMANDOS DO BOT
 # =========================================
-
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -468,7 +386,6 @@ async def configurar(ctx):
     """
 
     if not ctx.message.mentions:
-
         await ctx.send(
             "❌ Você precisa marcar um usuário.\n\n"
             "Exemplo:\n"
@@ -476,67 +393,137 @@ async def configurar(ctx):
         )
         return
 
-
     membro = ctx.message.mentions[0]
+    user_id_str = str(membro.id)
 
-
-    dados["usuario_id"] = membro.id
-    dados["nome"] = membro.display_name
-    dados["canal_id"] = ctx.channel.id
-
-    # Reinicia o controle de dias
-    dados["apareceu_hoje"] = False
-    dados["ultima_data"] = hoje().isoformat()
-
-    salvar()
-
-
-    await ctx.send(
-        f"🌈 O memorial de {membro.mention} "
-        "foi configurado com sucesso."
-    )
-
-
-    # Envia o estado atual
-    await enviar_memorial(ctx.channel)
-
-
-
-@bot.command()
-async def dias(ctx):
-    """
-    Mostra o status atual do memorial.
-    """
-
-    if dados["usuario_id"] == 0:
-
+    # Verifica se já existe memorial para este usuário
+    if user_id_str in dados["memoriais"]:
         await ctx.send(
-            "❌ Nenhum memorial foi configurado ainda."
+            f"⚠️ Já existe um memorial para {membro.mention}.\n"
+            "Use `!remover @usuario` para remover ou atualize manualmente."
         )
         return
 
-
-    await ctx.send(
-        embed=criar_embed_memorial()
+    # Cria novo memorial
+    criar_memorial(
+        user_id=membro.id,
+        nome=membro.display_name,
+        canal_id=ctx.channel.id
     )
 
+    await ctx.send(
+        f"🌈 Memorial de {membro.mention} "
+        "foi configurado com sucesso."
+    )
+
+    # Envia o estado atual
+    memorial = get_memorial(membro.id)
+    await enviar_memorial(memorial, ctx.channel)
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def remover(ctx):
+    """
+    Remove o memorial de um usuário.
+    Apenas administradores podem usar.
+    """
+
+    if not ctx.message.mentions:
+        await ctx.send(
+            "❌ Você precisa marcar um usuário.\n\n"
+            "Exemplo:\n"
+            "`!remover @usuario`"
+        )
+        return
+
+    membro = ctx.message.mentions[0]
+    user_id_str = str(membro.id)
+
+    if user_id_str not in dados["memoriais"]:
+        await ctx.send(
+            f"❌ Não existe memorial para {membro.mention}."
+        )
+        return
+
+    del dados["memoriais"][user_id_str]
+    salvar()
+
+    await ctx.send(
+        f"🗑️ Memorial de {membro.mention} foi removido com sucesso."
+    )
+
+
+@bot.command()
+async def listar(ctx):
+    """
+    Lista todos os memoriais ativos.
+    """
+
+    if not dados["memoriais"]:
+        await ctx.send("📭 Nenhum memorial ativo no momento.")
+        return
+
+    embed = discord.Embed(
+        title="📋 Lista de Memoriais",
+        color=discord.Color.blurple()
+    )
+
+    descricao = ""
+    for user_id_str, memorial in dados["memoriais"].items():
+        descricao += f"• **{memorial['nome']}** - {memorial['dias']} dias\n"
+
+    embed.description = descricao
+    embed.set_footer(
+        text=f"Total de {len(dados['memoriais'])} memoriais"
+    )
+
+    await ctx.send(embed=embed)
+
+
+@bot.command()
+async def dias(ctx, membro: discord.Member = None):
+    """
+    Mostra o status atual do memorial de um usuário.
+    Se nenhum usuário for mencionado, mostra o memorial do autor.
+    """
+
+    if membro is None:
+        membro = ctx.author
+
+    user_id_str = str(membro.id)
+
+    if user_id_str not in dados["memoriais"]:
+        await ctx.send(
+            f"❌ Não existe memorial para {membro.mention}."
+        )
+        return
+
+    memorial = get_memorial(membro.id)
+    await ctx.send(
+        embed=criar_embed_memorial(memorial, membro.id)
+    )
 
 
 @bot.command()
 async def teste(ctx):
     """
-    Testa a aparência do memorial.
+    Testa a aparência do memorial do autor.
     Não altera nenhuma contagem.
     """
 
-    await ctx.send(
-        "🧪 Visualização de teste:"
-    )
+    if str(ctx.author.id) not in dados["memoriais"]:
+        await ctx.send(
+            "❌ Você não tem um memorial configurado.\n"
+            "Peça a um administrador para configurar."
+        )
+        return
 
+    memorial = get_memorial(ctx.author.id)
+    await ctx.send("🧪 Visualização de teste:")
     await ctx.send(
-        embed=criar_embed_memorial()
+        embed=criar_embed_memorial(memorial, ctx.author.id)
     )
-
 
 
 @bot.command()
@@ -545,120 +532,89 @@ async def info(ctx):
     Mostra informações técnicas do sistema.
     """
 
-    if dados["usuario_id"] == 0:
-
-        await ctx.send(
-            "❌ Nenhum memorial configurado."
-        )
-        return
-
-
     embed = discord.Embed(
-        title="📊 Informações do Memorial",
+        title="📊 Informações do Sistema",
         color=discord.Color.blurple()
     )
 
-
     embed.add_field(
-        name="👤 Pessoa lembrada",
-        value=dados["nome"],
+        name="📊 Total de Memoriais",
+        value=str(len(dados["memoriais"])),
         inline=False
     )
 
-
     embed.add_field(
-        name="📅 Dias de ausência",
-        value=str(dados["dias"]),
-        inline=True
-    )
-
-
-    embed.add_field(
-        name="🏆 Recorde",
+        name="🏆 Recorde Global",
         value=f"{RECORDE} dias",
-        inline=True
-    )
-
-
-    embed.add_field(
-        name="📍 Canal",
-        value=f"<#{dados['canal_id']}>",
         inline=False
     )
 
-
     embed.add_field(
-        name="🕒 Última atualização",
-        value=dados["ultima_data"],
-        inline=False
-    )
-
-
-    embed.add_field(
-        name="🌎 Horário",
+        name="🌎 Horário do Sistema",
         value=agora().strftime("%d/%m/%Y %H:%M"),
         inline=False
     )
 
+    # Lista os memoriais ativos
+    if dados["memoriais"]:
+        lista = ""
+        for user_id_str, memorial in dados["memoriais"].items():
+            lista += f"• {memorial['nome']} - {memorial['dias']} dias\n"
+        embed.add_field(
+            name="📋 Memoriais Ativos",
+            value=lista,
+            inline=False
+        )
 
-    await ctx.send(
-        embed=embed
-    )
-
+    await ctx.send(embed=embed)
 
 
 # =========================================
 # TRATAMENTO DE ERROS
 # =========================================
 
-
 @configurar.error
 async def erro_configurar(ctx, erro):
-
-    if isinstance(
-        erro,
-        commands.MissingPermissions
-    ):
-
+    if isinstance(erro, commands.MissingPermissions):
         await ctx.send(
             "⛔ Apenas administradores "
             "podem configurar o memorial."
         )
-
     else:
-
         raise erro
 
+
+@remover.error
+async def erro_remover(ctx, erro):
+    if isinstance(erro, commands.MissingPermissions):
+        await ctx.send(
+            "⛔ Apenas administradores "
+            "podem remover memoriais."
+        )
+    else:
+        raise erro
 
 
 # =========================================
 # MENSAGEM DE INICIALIZAÇÃO
 # =========================================
 
-
 @bot.event
 async def on_connect():
-
-    print(
-        "🔗 Conectando ao Discord..."
-    )
+    print("🔗 Conectando ao Discord...")
 
     @bot.event
     async def on_disconnect():
         print("🔴 Bot desconectado do Discord")
-    
-    
+
     @bot.event
     async def on_resumed():
         print("🟢 Conexão com o Discord retomada")
+
 
 # =========================================
 # INICIAR BOT
 # =========================================
 
-
-print(
-    "🚀 Iniciando Memorial da Saudade..."
-)
-
+print("🚀 Iniciando Sistema de Memoriais Múltiplos...")
 bot.run(TOKEN)
