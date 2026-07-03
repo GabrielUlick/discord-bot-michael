@@ -439,32 +439,53 @@ def criar_embed_memorial(memorial):
 async def falar_tts(texto, canal_voz):
     """Fala um texto em um canal de voz usando TTS"""
     try:
+        # Verifica se o bot já está conectado em algum canal de voz neste servidor
+        for vc in bot.voice_clients:
+            if vc.guild == canal_voz.guild:
+                await vc.disconnect()
+                await asyncio.sleep(1)
+        
         # Conecta ao canal
-        vc = await canal_voz.connect()
+        vc = await canal_voz.connect(timeout=10.0)
         
         # Prepara o texto para URL (remove caracteres especiais)
-        texto_url = re.sub(r'[^a-zA-Z0-9áéíóúâêôãõç ]', '', texto)
-        texto_url = texto_url.replace(' ', '%20')
+        texto_limpo = re.sub(r'[^a-zA-Z0-9áéíóúâêôãõç ]', '', texto)
+        texto_url = texto_limpo.replace(' ', '%20')
         
-        # Toca o áudio usando Google TTS
+        if not texto_url or len(texto_url) < 1:
+            texto_url = "teste"
+        
+        # Tenta usar o Google TTS
+        url = f"https://translate.google.com/translate_tts?ie=UTF-8&q={texto_url}&tl=pt&client=tw-ob"
+        
+        # Cria o áudio com FFmpeg
         audio_source = discord.FFmpegPCMAudio(
-            f"https://translate.google.com/translate_tts?ie=UTF-8&q={texto_url}&tl=pt&client=tw-ob",
+            url,
             before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
         )
         
-        await vc.play(audio_source)
+        # Toca o áudio
+        vc.play(audio_source)
         
         # Espera terminar
-        while vc.is_playing():
-            await asyncio.sleep(1)
+        timeout = 30
+        while vc.is_playing() and timeout > 0:
+            await asyncio.sleep(0.5)
+            timeout -= 0.5
         
-        # Espera um pouco e desconecta
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         await vc.disconnect()
         return True
         
     except Exception as e:
         print(f"❌ Erro no TTS: {e}")
+        # Tenta desconectar se houver erro
+        try:
+            for vc in bot.voice_clients:
+                if vc.guild == canal_voz.guild:
+                    await vc.disconnect()
+        except:
+            pass
         return False
 
 async def entrar_call_tts_memorial(memorial, guild):
@@ -506,7 +527,7 @@ async def entrar_call_tts_memorial(memorial, guild):
         return False
 
 async def anunciar_todos_memoriais(guild, canal_voz):
-    """Anuncia todos os memoriais de uma vez"""
+    """Anuncia todos os memoriais de uma vez na call onde o usuário está"""
     try:
         memoriais = db.cursor.execute("SELECT * FROM memoriais").fetchall()
         
@@ -529,44 +550,52 @@ async def anunciar_todos_memoriais(guild, canal_voz):
             if dias > 0:
                 frase = f"{nome} está ausente há {dias} dias."
                 
-                # Prepara o texto para URL
-                texto_url = re.sub(r'[^a-zA-Z0-9áéíóúâêôãõç ]', '', frase)
+                # Tenta falar com TTS
+                try:
+                    texto_url = re.sub(r'[^a-zA-Z0-9áéíóúâêôãõç ]', '', frase)
+                    texto_url = texto_url.replace(' ', '%20')
+                    
+                    audio_source = discord.FFmpegPCMAudio(
+                        f"https://translate.google.com/translate_tts?ie=UTF-8&q={texto_url}&tl=pt&client=tw-ob",
+                        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+                    )
+                    
+                    vc.play(audio_source)
+                    
+                    while vc.is_playing():
+                        await asyncio.sleep(0.5)
+                    
+                    await asyncio.sleep(0.5)
+                    
+                except Exception as e:
+                    print(f"⚠️ Erro no TTS para {nome}: {e}")
+                    continue
+        
+        # Frase final
+        if ativos:
+            try:
+                frase_final = f"Estes são todos os ausentes do servidor. Total de {len(ativos)} pessoas."
+                texto_url = re.sub(r'[^a-zA-Z0-9áéíóúâêôãõç ]', '', frase_final)
                 texto_url = texto_url.replace(' ', '%20')
                 
-                # Toca o áudio
                 audio_source = discord.FFmpegPCMAudio(
                     f"https://translate.google.com/translate_tts?ie=UTF-8&q={texto_url}&tl=pt&client=tw-ob",
                     before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
                 )
                 
-                await vc.play(audio_source)
+                vc.play(audio_source)
                 
-                # Espera terminar
                 while vc.is_playing():
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.5)
                 
-                # Pequena pausa entre nomes
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(1)
+                
+            except Exception as e:
+                print(f"⚠️ Erro no TTS final: {e}")
         
-        # Frase final
-        frase_final = "Estes são todos os ausentes do servidor."
-        texto_url = re.sub(r'[^a-zA-Z0-9áéíóúâêôãõç ]', '', frase_final)
-        texto_url = texto_url.replace(' ', '%20')
-        
-        audio_source = discord.FFmpegPCMAudio(
-            f"https://translate.google.com/translate_tts?ie=UTF-8&q={texto_url}&tl=pt&client=tw-ob",
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-        )
-        
-        await vc.play(audio_source)
-        
-        while vc.is_playing():
-            await asyncio.sleep(1)
-        
-        await asyncio.sleep(2)
         await vc.disconnect()
         
-        return f"✅ Anunciados {len(ativos)} memoriais na call!"
+        return f"✅ Anunciados {len(ativos)} memoriais na call {canal_voz.mention}!"
         
     except Exception as e:
         print(f"❌ Erro no anúncio: {e}")
@@ -828,7 +857,7 @@ async def cmd_setrecorde(ctx, usuario: discord.Member, *, recorde: str):
 @bot.command(name='setcall')
 @commands.has_permissions(administrator=True)
 async def cmd_setcall(ctx, canal: discord.VoiceChannel = None):
-    """!setcall #canal - Define o canal de voz para o bot entrar"""
+    """!setcall #canal - Define o canal de voz para o bot entrar (para memorial automático)"""
     if canal:
         set_canal_voz(ctx.guild.id, canal.id)
         await ctx.send(f"✅ Canal de voz configurado para {canal.mention}")
@@ -839,7 +868,7 @@ async def cmd_setcall(ctx, canal: discord.VoiceChannel = None):
 @bot.command(name='anunciacao')
 @commands.has_permissions(administrator=True)
 async def cmd_anunciacao(ctx):
-    """!anunciacao - Entra na call e anuncia todos os ausentes do memorial"""
+    """!anunciacao - Entra na call onde você está e anuncia todos os ausentes do memorial"""
     # Verifica se o usuário está em uma call
     if not ctx.author.voice:
         await ctx.send("❌ Você precisa estar em uma call para usar este comando!")
@@ -849,10 +878,14 @@ async def cmd_anunciacao(ctx):
     
     # Verifica se o bot tem permissão
     if not canal_voz.permissions_for(ctx.guild.me).connect:
-        await ctx.send("❌ Não tenho permissão para entrar neste canal de voz!")
+        await ctx.send("❌ Não tenho permissão para CONECTAR neste canal de voz!")
         return
     
-    await ctx.send("🔊 Iniciando anúncio dos ausentes...")
+    if not canal_voz.permissions_for(ctx.guild.me).speak:
+        await ctx.send("❌ Não tenho permissão para FALAR neste canal!")
+        return
+    
+    await ctx.send(f"🔊 Entrando em {canal_voz.mention} para fazer o anúncio...")
     
     # Anuncia todos os memoriais
     resultado = await anunciar_todos_memoriais(ctx.guild, canal_voz)
@@ -868,16 +901,25 @@ async def cmd_testcall(ctx, *, texto: str = "Olá! Este é um teste do sistema d
     
     canal_voz = ctx.author.voice.channel
     
-    await ctx.send(f"🔊 Testando TTS: {texto}")
+    # Verifica permissões
+    if not canal_voz.permissions_for(ctx.guild.me).connect:
+        await ctx.send("❌ Não tenho permissão para CONECTAR neste canal!")
+        return
+    
+    if not canal_voz.permissions_for(ctx.guild.me).speak:
+        await ctx.send("❌ Não tenho permissão para FALAR neste canal!")
+        return
+    
+    await ctx.send(f"🔊 Testando TTS: \"{texto}\"")
     
     try:
         sucesso = await falar_tts(texto, canal_voz)
         if sucesso:
-            await ctx.send("✅ Teste concluído!")
+            await ctx.send("✅ Teste concluído com sucesso!")
         else:
-            await ctx.send("❌ Falha no teste!")
+            await ctx.send("❌ Falha no teste! Verifique os logs do servidor.")
     except Exception as e:
-        await ctx.send(f"❌ Erro no teste: {e}")
+        await ctx.send(f"❌ Erro: {str(e)[:100]}")
 
 # ---------- TICKETS ----------
 
@@ -1158,9 +1200,9 @@ async def cmd_ajuda(ctx):
     embed.add_field(
         name="🎤 Voz",
         value=(
-            "`!setcall #canal` - Configura canal de voz\n"
-            "`!anunciacao` - Anuncia todos ausentes na call\n"
-            "`!testcall \"Texto\"` - Testa o TTS"
+            "`!setcall #canal` - Configura canal de voz (para memorial automático)\n"
+            "`!anunciacao` - Entra na sua call e anuncia todos ausentes\n"
+            "`!testcall \"Texto\"` - Testa o TTS na sua call"
         ),
         inline=False
     )
